@@ -1,0 +1,395 @@
+# Kubernetes Deployment Configuration for KKP Creative & Tech Solutions
+
+# Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kkp-production
+  labels:
+    name: kkp-production
+    environment: production
+
+---
+# ConfigMap for application configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kkp-config
+  namespace: kkp-production
+data:
+  NODE_ENV: "production"
+  REACT_APP_API_URL: "https://api.kkpcreativetechsolutions.com"
+  REACT_APP_WS_URL: "wss://api.kkpcreativetechsolutions.com"
+  REACT_APP_GA_MEASUREMENT_ID: "G-XXXXXXXXXX"
+  REACT_APP_SENTRY_DSN: "https://your-sentry-dsn@sentry.io/project"
+
+---
+# Secret for sensitive data
+apiVersion: v1
+kind: Secret
+metadata:
+  name: kkp-secrets
+  namespace: kkp-production
+type: Opaque
+data:
+  JWT_SECRET: <base64-encoded-jwt-secret>
+  DATABASE_URL: <base64-encoded-database-url>
+  REDIS_URL: <base64-encoded-redis-url>
+  AWS_ACCESS_KEY_ID: <base64-encoded-aws-key>
+  AWS_SECRET_ACCESS_KEY: <base64-encoded-aws-secret>
+
+---
+# Frontend Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kkp-frontend
+  namespace: kkp-production
+  labels:
+    app: kkp-frontend
+    version: v1
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: kkp-frontend
+  template:
+    metadata:
+      labels:
+        app: kkp-frontend
+        version: v1
+    spec:
+      containers:
+      - name: kkp-frontend
+        image: kkp/frontend:latest
+        ports:
+        - containerPort: 3000
+        env:
+        - name: NODE_ENV
+          valueFrom:
+            configMapKeyRef:
+              name: kkp-config
+              key: NODE_ENV
+        - name: REACT_APP_API_URL
+          valueFrom:
+            configMapKeyRef:
+              name: kkp-config
+              key: REACT_APP_API_URL
+        - name: REACT_APP_WS_URL
+          valueFrom:
+            configMapKeyRef:
+              name: kkp-config
+              key: REACT_APP_WS_URL
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 3000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1001
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+
+---
+# Backend API Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kkp-api
+  namespace: kkp-production
+  labels:
+    app: kkp-api
+    version: v1
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: kkp-api
+  template:
+    metadata:
+      labels:
+        app: kkp-api
+        version: v1
+    spec:
+      containers:
+      - name: kkp-api
+        image: kkp/api:latest
+        ports:
+        - containerPort: 5000
+        env:
+        - name: NODE_ENV
+          valueFrom:
+            configMapKeyRef:
+              name: kkp-config
+              key: NODE_ENV
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: kkp-secrets
+              key: JWT_SECRET
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: kkp-secrets
+              key: DATABASE_URL
+        - name: REDIS_URL
+          valueFrom:
+            secretKeyRef:
+              name: kkp-secrets
+              key: REDIS_URL
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 5000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 5000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1001
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+
+---
+# Frontend Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: kkp-frontend-service
+  namespace: kkp-production
+  labels:
+    app: kkp-frontend
+spec:
+  selector:
+    app: kkp-frontend
+  ports:
+  - port: 80
+    targetPort: 3000
+    protocol: TCP
+  type: ClusterIP
+
+---
+# Backend API Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: kkp-api-service
+  namespace: kkp-production
+  labels:
+    app: kkp-api
+spec:
+  selector:
+    app: kkp-api
+  ports:
+  - port: 80
+    targetPort: 5000
+    protocol: TCP
+  type: ClusterIP
+
+---
+# Ingress for external access
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: kkp-ingress
+  namespace: kkp-production
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+    nginx.ingress.kubernetes.io/rate-limit-window: "1m"
+spec:
+  tls:
+  - hosts:
+    - kkpcreativetechsolutions.com
+    - www.kkpcreativetechsolutions.com
+    secretName: kkp-tls
+  rules:
+  - host: kkpcreativetechsolutions.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: kkp-frontend-service
+            port:
+              number: 80
+      - path: /api
+        pathType: Prefix
+        backend:
+          service:
+            name: kkp-api-service
+            port:
+              number: 80
+  - host: www.kkpcreativetechsolutions.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: kkp-frontend-service
+            port:
+              number: 80
+
+---
+# Horizontal Pod Autoscaler for Frontend
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: kkp-frontend-hpa
+  namespace: kkp-production
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: kkp-frontend
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+
+---
+# Horizontal Pod Autoscaler for API
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: kkp-api-hpa
+  namespace: kkp-production
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: kkp-api
+  minReplicas: 2
+  maxReplicas: 5
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+
+---
+# Pod Disruption Budget
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: kkp-frontend-pdb
+  namespace: kkp-production
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: kkp-frontend
+
+---
+# Pod Disruption Budget for API
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: kkp-api-pdb
+  namespace: kkp-production
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: kkp-api
+
+---
+# Network Policy for security
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kkp-network-policy
+  namespace: kkp-production
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: kkp-production
+    - podSelector:
+        matchLabels:
+          app: kkp-frontend
+    ports:
+    - protocol: TCP
+      port: 3000
+    - protocol: TCP
+      port: 5000
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: kkp-production
+    ports:
+    - protocol: TCP
+      port: 5432
+    - protocol: TCP
+      port: 6379
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 443
+    - protocol: TCP
+      port: 80
+    - protocol: UDP
+      port: 53
